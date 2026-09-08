@@ -13,13 +13,32 @@ without reference to any other implementation.
 
 ## Status
 
-Specification complete; implementation not yet started. Start at
+Under construction. The command-line boundary (invocation grammar, global
+options, dispatch order, exit codes, stream routing) is in place; the
+subcommands behind it are being built out. Start at
 [`appspec/00-overview.md`](appspec/00-overview.md) — the spec reads top-down
 through altitudes (product contract → architecture → boundary detail).
+
+## The command is `mackup`
+
+`macklebox` is the project and package name. The observable surface — the
+command name, its output, the config filenames, the `Mackup <version>` string —
+is the specification's, because command-line compatibility *is* the deliverable.
+
+## Running it
+
+Requires Python 3.9+ and [uv](https://docs.astral.sh/uv/).
+
+```sh
+uv run mackup --help      # run the command
+uv run pytest             # run the black-box conformance suite
+```
 
 ## Layout
 
 | Path | What it is |
 |------|------------|
 | `appspec/` | The functional specification that drives the build (source of truth) |
+| `src/macklebox/` | The implementation |
+| `tests/` | Black-box tests: run the real command, assert on stdout/stderr/exit code |
 | `LICENSE`  | MIT |
