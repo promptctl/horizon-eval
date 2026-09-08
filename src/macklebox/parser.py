@@ -63,9 +63,11 @@ _SHORT_TO_LONG = {
     short: long for long, (short, _, _) in _OPTIONS.items() if short is not None
 }
 
-# Actions the program can be asked to perform.  `usage` is the bare invocation;
-# --help and --version are options, not subcommands, and are read off Options.
+# Actions the program can be asked to perform.  `usage` is the bare invocation.
+# --help and --version are options, not subcommands: they are answered off
+# Options before the grammar is consulted, and carry SHORT_CIRCUIT as an action.
 USAGE_ACTION = "usage"
+SHORT_CIRCUIT = "short-circuit"
 LIST = "list"
 SHOW = "show"
 BACKUP = "backup"
@@ -112,11 +114,24 @@ class Invocation(object):
 def parse(argv):
     """Parse the argument list (without the program name) into an Invocation.
 
-    Raises UsageError for argv matching none of the listed usage lines.
+    Raises UsageError for argv matching none of the listed usage lines -- but
+    only after --help / --version have had their say.  appspec/02 gives them
+    "No other action" and appspec/01 section 4 has them short-circuit "touching
+    nothing else"; neither is conditioned on the rest of argv being well formed,
+    so `mackup --help show` prints help rather than complaining that `show`
+    wants an application.
     """
-    flags, positionals = _split(list(argv))
+    flags, positionals, deferred = _split(list(argv))
+    options = Options(**flags)
+
+    if options.help or options.version:
+        return Invocation(SHORT_CIRCUIT, None, options)
+
+    if deferred is not None:
+        raise deferred
+
     action, application = _interpret(positionals)
-    return Invocation(action, application, Options(**flags))
+    return Invocation(action, application, options)
 
 
 def _split(tokens):
@@ -126,23 +141,34 @@ def _split(tokens):
     are interchangeable and produce identical behavior."  Options after the
     subcommand are accepted too -- the grammar's `[options]` is positional
     sugar, and rejecting `mackup backup -v` would surprise every user.
+
+    Returns `(flags, positionals, deferred_error)`.  A malformed option is
+    *deferred* rather than raised on the spot, so a --help appearing later on
+    the line is still seen; `parse` raises it for every line that does not
+    short-circuit.
     """
     flags = {}
     positionals = []
+    deferred = None
     index = 0
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
             positionals.extend(tokens[index + 1 :])
             break
-        if token.startswith("--"):
-            index = _read_long(token, tokens, index, flags)
-        elif token.startswith("-") and token != "-":
-            index = _read_shorts(token, tokens, index, flags)
-        else:
-            positionals.append(token)
+        try:
+            if token.startswith("--"):
+                index = _read_long(token, tokens, index, flags)
+            elif token.startswith("-") and token != "-":
+                index = _read_shorts(token, tokens, index, flags)
+            else:
+                positionals.append(token)
+                index += 1
+        except UsageError as error:
+            if deferred is None:
+                deferred = error
             index += 1
-    return flags, positionals
+    return flags, positionals, deferred
 
 
 def _read_long(token, tokens, index, flags):

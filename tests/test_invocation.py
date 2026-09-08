@@ -62,6 +62,30 @@ class TestHelp(object):
         assert result.exit_code == 0
         assert FORCE_CONFLICT_MESSAGE not in result.err
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ("--help", "show"),          # `show` wants an <application>
+            ("--help", "frobnicate"),    # unrecognized subcommand
+            ("--help", "backup", "a", "b"),  # extra positional
+            ("--frobnicate", "--help"),  # unrecognized option, help later
+        ],
+        ids=lambda a: " ".join(a),
+    )
+    def test_help_wins_over_a_usage_error(self, mackup, argv):
+        """appspec/02: "No other action" -- grammar validation is one of the
+        actions help skips, not a check that runs ahead of it."""
+        result = mackup(*argv)
+        assert result.exit_code == 0
+        assert "Usage:" in result.out
+        assert result.stderr == ""
+
+    def test_help_as_a_config_path_is_not_a_help_request(self, mackup):
+        """`-c` consumes its value; that value is a path, not a flag."""
+        result = mackup("-c", "--help", "list")
+        assert result.exit_code == 1
+        assert "is not implemented yet" in result.err
+
 
 class TestVersion(object):
     """appspec/02: --version prints `Mackup <version>` to stdout, exits 0."""
@@ -83,6 +107,12 @@ class TestVersion(object):
         """appspec/07: colour is not conditioned on stdout being a TTY."""
         result = mackup("--version")
         assert "\033[" in result.stdout
+
+    def test_version_wins_over_a_usage_error(self, mackup):
+        result = mackup("--version", "frobnicate")
+        assert result.exit_code == 0
+        assert result.out.strip().startswith("Mackup ")
+        assert result.stderr == ""
 
 
 def result_version(mackup):
@@ -113,14 +143,13 @@ class TestForceFlagExclusion(object):
         assert result.exit_code == 1
         assert result.err.strip() == FORCE_CONFLICT_MESSAGE
 
-    def test_rejected_before_the_config_load_gate(self, mackup):
-        """A config file that does not exist would fail the load gate; the force
-        conflict is reported instead, proving it is checked first."""
-        result = mackup(
-            "--force", "--force-no", "-c", "/nonexistent/mackup.cfg", "backup"
-        )
+    def test_rejected_with_no_subcommand(self, mackup):
+        """appspec/02 grants the combination one exception -- --help/--version.
+        A bare invocation is not it, so the usage display must not swallow it."""
+        result = mackup("--force", "--force-no")
         assert result.exit_code == 1
         assert result.err.strip() == FORCE_CONFLICT_MESSAGE
+        assert result.stdout == ""
 
     def test_fatal_message_is_colored(self, mackup):
         result = mackup("--force", "--force-no", "backup")

@@ -50,6 +50,10 @@ def _short_circuit(invocation):
     --version are the only paths that both succeed and skip the config-load gate
     (appspec/02), so they are answered before anything else -- including the
     force-flag conflict, which is not an error the user asking for help needs.
+
+    The force conflict is answered before the bare-usage display, because
+    appspec/02 grants that combination exactly one exception and a bare
+    invocation is not it.
     """
     options = invocation.options
 
@@ -61,16 +65,16 @@ def _short_circuit(invocation):
         output.print_message("Mackup {0}".format(VERSION))
         return EXIT_OK
 
+    if options.force and options.force_no:
+        # Rejected before config is loaded and before any action is taken.
+        output.print_fatal(FORCE_CONFLICT_MESSAGE)
+        return EXIT_FAILURE
+
     if invocation.action == parser.USAGE_ACTION:
         # appspec/02: a bare invocation is a usage display, not an error --
         # usage block to the user, exit 0.
         output.write_raw(parser.USAGE)
         return EXIT_OK
-
-    if options.force and options.force_no:
-        # Rejected before config is loaded and before any action is taken.
-        output.print_fatal(FORCE_CONFLICT_MESSAGE)
-        return EXIT_FAILURE
 
     return None
 
