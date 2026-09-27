@@ -122,7 +122,16 @@ func TestParseRejectsNonMatchingArgv(t *testing.T) {
 		{"unrecognized long option", []string{"--frobnicate", "list"}},
 		{"unrecognized short option", []string{"-z", "list"}},
 		{"config-file without a value", []string{"list", "--config-file"}},
+		{"short config-file without a value", []string{"list", "-c"}},
 		{"valueless option given a value", []string{"--verbose=yes", "list"}},
+		// A malformed --help/--version token matches no usage line, so it must
+		// not short-circuit the run the way a well-formed one does.
+		{"help given a value", []string{"--help=1"}},
+		{"version given a value", []string{"--version=1"}},
+		// An empty config path must not be silently indistinguishable from
+		// "no --config-file given", which would fall back to default discovery.
+		{"empty long config-file value", []string{"--config-file=", "list"}},
+		{"empty short config-file value", []string{"-c", "", "list"}},
 	}
 	for _, tt := range tests {
 		if _, err := Parse(tt.argv); err == nil {
@@ -160,5 +169,31 @@ func TestParseDoubleDashEndsOptions(t *testing.T) {
 	want := Options{Command: CmdBackup, Application: "-weird-app"}
 	if got != want {
 		t.Errorf("Parse = %+v, want %+v", got, want)
+	}
+}
+
+// An escaped positional is only ever an application key: past "--" the words
+// install and uninstall lose their subcommand reading.
+func TestParseDoubleDashProtectsPositionalsFromSubcommandResolution(t *testing.T) {
+	tests := []struct {
+		argv []string
+		want Options
+	}{
+		{[]string{"link", "--", "install"}, Options{Command: CmdLink, Application: "install"}},
+		{[]string{"link", "--", "uninstall"}, Options{Command: CmdLink, Application: "uninstall"}},
+		// Unescaped, the same words are the subcommand.
+		{[]string{"link", "install"}, Options{Command: CmdLinkInstall}},
+		// The command word has no second reading, so it resolves either way.
+		{[]string{"--", "list"}, Options{Command: CmdList}},
+	}
+	for _, tt := range tests {
+		got, err := Parse(tt.argv)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", tt.argv, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("Parse(%q) = %+v, want %+v", tt.argv, got, tt.want)
+		}
 	}
 }

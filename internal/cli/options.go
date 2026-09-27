@@ -60,6 +60,8 @@ type Options struct {
 
 // usageError is a non-matching argv: the program prints the offending argument
 // and the usage block (appspec/02-invocation.md, "Argument-parser behavior").
+// Every error Parse reports is one, which is what makes the usage block the
+// right response to all of them.
 type usageError struct{ msg string }
 
 func (e *usageError) Error() string { return e.msg }
@@ -71,27 +73,17 @@ func usagef(format string, args ...any) error {
 // valued names the long options that take an argument.
 var valued = map[string]bool{"--config-file": true}
 
-// longFlags maps each valueless long option to its field.
-func (o *Options) setLong(name string) bool {
-	switch name {
-	case "--help":
-		o.Help = true
-	case "--version":
-		o.Version = true
-	case "--force":
-		o.Force = true
-	case "--force-no":
-		o.ForceNo = true
-	case "--root":
-		o.Root = true
-	case "--dry-run":
-		o.DryRun = true
-	case "--verbose":
-		o.Verbose = true
-	default:
-		return false
-	}
-	return true
+// longFlags maps each valueless long option to the field it sets. Membership is
+// the definition of "is a known valueless option", so no caller has to keep a
+// second list in step with this one.
+var longFlags = map[string]func(*Options){
+	"--help":     func(o *Options) { o.Help = true },
+	"--version":  func(o *Options) { o.Version = true },
+	"--force":    func(o *Options) { o.Force = true },
+	"--force-no": func(o *Options) { o.ForceNo = true },
+	"--root":     func(o *Options) { o.Root = true },
+	"--dry-run":  func(o *Options) { o.DryRun = true },
+	"--verbose":  func(o *Options) { o.Verbose = true },
 }
 
 // shortToLong maps each short option to its long form. Short and long forms are
@@ -108,14 +100,19 @@ var shortToLong = map[byte]string{
 // Parse turns argv (without the program name) into Options. It reports a usage
 // error for any argv matching none of the spec's invocation forms.
 //
-// Options may appear before or after the subcommand, a lone "--" ends option
-// parsing, and --help/--version are honored even alongside an otherwise
-// non-matching argv, because they are specified to print and exit taking "no
-// other action".
+// Options may appear before or after the subcommand, and a lone "--" ends option
+// parsing. --help/--version are honored alongside an otherwise non-matching
+// argv, because they are specified to print and exit taking "no other action" —
+// but a malformed --help/--version token (--help=1) is not one of them and is a
+// usage error like any other.
 func Parse(argv []string) (Options, error) {
 	var opts Options
 	var positional []string
 	var optErr error
+
+	// escapeAt is the index in positional at which "--"-escaped arguments begin,
+	// or -1 when no "--" was given.
+	escapeAt := -1
 
 	fail := func(err error) {
 		if optErr == nil {
@@ -127,8 +124,10 @@ func Parse(argv []string) (Options, error) {
 		arg := argv[i]
 		switch {
 		case arg == "--":
+			escapeAt = len(positional)
 			positional = append(positional, argv[i+1:]...)
 			i = len(argv)
+
 		case len(arg) > 2 && arg[:2] == "--":
 			name, value, hasValue := splitLongOption(arg)
 			switch {
@@ -141,14 +140,23 @@ func Parse(argv []string) (Options, error) {
 					i++
 					value = argv[i]
 				}
+				if value == "" {
+					fail(usagef("%s requires a non-empty argument", name))
+					continue
+				}
 				opts.ConfigFile = value
-			case opts.setLong(name):
+			case longFlags[name] != nil:
+				// Reject before setting the flag: an accepted --help=1 would
+				// otherwise short-circuit the run and discard this error.
 				if hasValue {
 					fail(usagef("%s does not take an argument", name))
+					continue
 				}
+				longFlags[name](&opts)
 			default:
 				fail(usagef("unrecognized option: %s", name))
 			}
+
 		case len(arg) > 1 && arg[0] == '-':
 			// A short-option cluster: valueless flags may be stacked, and the
 			// last one may take the rest of the token or the next argv entry as
@@ -160,33 +168,45 @@ func Parse(argv []string) (Options, error) {
 					break
 				}
 				if !valued[name] {
-					opts.setLong(name)
+					setter := longFlags[name]
+					if setter == nil {
+						fail(usagef("unrecognized option: -%c", arg[j]))
+						break
+					}
+					setter(&opts)
 					continue
 				}
-				if rest := arg[j+1:]; rest != "" {
-					opts.ConfigFile = rest
-				} else if i+1 < len(argv) {
+				value := arg[j+1:]
+				if value == "" {
+					if i+1 >= len(argv) {
+						fail(usagef("-%c requires an argument", arg[j]))
+						break
+					}
 					i++
-					opts.ConfigFile = argv[i]
-				} else {
-					fail(usagef("-%c requires an argument", arg[j]))
+					value = argv[i]
 				}
+				if value == "" {
+					fail(usagef("-%c requires a non-empty argument", arg[j]))
+					break
+				}
+				opts.ConfigFile = value
 				break
 			}
+
 		default:
 			positional = append(positional, arg)
 		}
 	}
 
 	// --help and --version print and exit without taking any other action, so
-	// they outrank both option and grammar errors.
+	// they outrank a non-matching grammar.
 	if opts.Help || opts.Version {
 		return opts, nil
 	}
 	if optErr != nil {
 		return opts, optErr
 	}
-	if err := opts.resolveCommand(positional); err != nil {
+	if err := opts.resolveCommand(positional, escapeAt); err != nil {
 		return opts, err
 	}
 	return opts, nil
@@ -203,11 +223,17 @@ func splitLongOption(arg string) (name, value string, hasValue bool) {
 }
 
 // resolveCommand binds the positional arguments to one invocation form.
-func (o *Options) resolveCommand(positional []string) error {
+//
+// escapeAt is Parse's "--" boundary: a positional at or past it was escaped by
+// the user, so it is only ever an application key, never a subcommand word. The
+// command word itself is always resolved, escaped or not, because it has no
+// second reading.
+func (o *Options) resolveCommand(positional []string, escapeAt int) error {
 	if len(positional) == 0 {
 		o.Command = CmdNone
 		return nil
 	}
+	escaped := func(i int) bool { return escapeAt >= 0 && i >= escapeAt }
 
 	rest := positional[1:]
 	switch positional[0] {
@@ -228,7 +254,7 @@ func (o *Options) resolveCommand(positional []string) error {
 		return o.takeApplication(rest, 1)
 	case "link":
 		o.Command = CmdLink
-		if len(rest) > 0 {
+		if len(rest) > 0 && !escaped(1) {
 			switch rest[0] {
 			case "install":
 				o.Command = CmdLinkInstall

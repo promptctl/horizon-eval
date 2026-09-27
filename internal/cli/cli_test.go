@@ -157,7 +157,7 @@ func TestEveryCommandLoadsConfigBeforeDispatch(t *testing.T) {
 // stderr, nothing on stdout, and a non-zero exit.
 func TestFatalConfigErrorAbortsEveryCommand(t *testing.T) {
 	for _, argv := range [][]string{{"list"}, {"show", "vim"}, {"backup", "vim"}} {
-		c := exec(argv, errors.New("Unable to find the storage folder: /nope"))
+		c := exec(argv, errors.New("Error: Unable to find the storage folder: /nope"))
 		if c.code == ExitOK {
 			t.Errorf("%q: exit %d, want non-zero", argv, c.code)
 		}
@@ -166,6 +166,34 @@ func TestFatalConfigErrorAbortsEveryCommand(t *testing.T) {
 		}
 		if !strings.Contains(c.err.String(), "Unable to find the storage folder") {
 			t.Errorf("%q: stderr = %q, want the config diagnostic", argv, c.err.String())
+		}
+	}
+}
+
+// appspec/07 specifies some fatal diagnostics as a single "Error: ... Aborting."
+// line and others as multi-line messages carrying no such prefix, so the run
+// must print the error's own text rather than reshaping it.
+func TestFatalConfigErrorIsPrintedVerbatim(t *testing.T) {
+	multiline := "Unable to find your Dropbox =(\nhttps://example.invalid/doc"
+	c := exec([]string{"list"}, errors.New(multiline))
+	if got, want := c.err.String(), multiline+"\n"; got != want {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+}
+
+// A malformed --help/--version token matches no usage line, so it is a usage
+// error and must not short-circuit to a successful help or version display.
+func TestMalformedHelpAndVersionTokensAreUsageErrors(t *testing.T) {
+	for _, argv := range [][]string{{"--help=1"}, {"--version=1"}} {
+		c := exec(argv, nil)
+		if c.code != ExitFatal {
+			t.Errorf("%q: exit %d, want %d", argv, c.code, ExitFatal)
+		}
+		if c.out.Len() != 0 {
+			t.Errorf("%q: stdout = %q, want empty", argv, c.out.String())
+		}
+		if !strings.Contains(c.err.String(), "Usage:") {
+			t.Errorf("%q: stderr = %q, want the usage block", argv, c.err.String())
 		}
 	}
 }

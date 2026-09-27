@@ -60,14 +60,16 @@ func run(argv []string, s Streams, load func(Options) (config, error)) int {
 	opts, err := Parse(argv)
 	if err != nil {
 		// Parser usage and warning text goes to stderr
-		// (appspec/07-output-safety-lifecycle.md, "Output streams").
+		// (appspec/07-output-safety-lifecycle.md, "Output streams"). The usage
+		// block is the response to a non-matching argv specifically; any other
+		// parse failure is a plain fatal diagnostic.
 		var ue *usageError
 		if errors.As(err, &ue) {
 			fmt.Fprintf(s.Err, "mackup: %s\n", ue.msg)
+			fmt.Fprint(s.Err, Help)
 		} else {
-			fmt.Fprintf(s.Err, "mackup: %s\n", err)
+			fmt.Fprintln(s.Err, err)
 		}
-		fmt.Fprint(s.Err, Help)
 		return ExitFatal
 	}
 
@@ -96,7 +98,11 @@ func run(argv []string, s Streams, load func(Options) (config, error)) int {
 	// command, including list and show.
 	cfg, err := load(opts)
 	if err != nil {
-		fmt.Fprintf(s.Err, "Error: %s\n", err)
+		// Printed verbatim: appspec/07-output-safety-lifecycle.md specifies some
+		// of these diagnostics as a single "Error: ... Aborting." line and others
+		// as multi-line messages carrying no such prefix, so the user-facing
+		// shape is the error value's to own, not this call site's to impose.
+		fmt.Fprintln(s.Err, err)
 		return ExitFatal
 	}
 
