@@ -13,13 +13,30 @@ without reference to any other implementation.
 
 ## Status
 
-Specification complete; implementation not yet started. Start at
+Specification complete. Implementation under way in Go: the command-line
+boundary (invocation grammar, global options, dispatch order, exit codes) is in
+place; the resolvers and the sync commands are not yet. Start at
 [`appspec/00-overview.md`](appspec/00-overview.md) — the spec reads top-down
 through altitudes (product contract → architecture → boundary detail).
+
+The built command is named `mackup`, not `macklebox`: the observable surface is
+the spec's, and `macklebox` is the project and module name only.
+
+## Build
+
+```sh
+make build   # ./bin/mackup
+make check   # gofmt + go vet + go test
+```
+
+Go 1.25 or newer; no third-party dependencies.
 
 ## Layout
 
 | Path | What it is |
 |------|------------|
 | `appspec/` | The functional specification that drives the build (source of truth) |
+| `cmd/mackup/` | The command's entry point |
+| `internal/cli/` | The command-line boundary: grammar, options, dispatch, exit codes |
+| `internal/version/` | Version-string resolution |
 | `LICENSE`  | MIT |
