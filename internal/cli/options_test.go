@@ -99,6 +99,31 @@ func TestEveryShortOptionHasALongForm(t *testing.T) {
 	}
 }
 
+// A mistake spelled short and spelled long must produce the same diagnostic, so
+// the two forms are interchangeable in failure as well as in success.
+func TestParseReportsShortAndLongMistakesIdentically(t *testing.T) {
+	pairs := [][2][]string{
+		{{"-c"}, {"--config-file"}},
+		{{"list", "-c"}, {"list", "--config-file"}},
+		{{"-c=", "list"}, {"--config-file=", "list"}},
+		{{"-v=yes", "list"}, {"--verbose=yes", "list"}},
+		{{"-h=1"}, {"--help=1"}},
+	}
+	for _, pair := range pairs {
+		_, shortErr := Parse(pair[0])
+		_, longErr := Parse(pair[1])
+		if shortErr == nil || longErr == nil {
+			t.Errorf("Parse(%q) = %v, Parse(%q) = %v; want both to be usage errors",
+				pair[0], shortErr, pair[1], longErr)
+			continue
+		}
+		if shortErr.Error() != longErr.Error() {
+			t.Errorf("Parse(%q) said %q, Parse(%q) said %q; want identical",
+				pair[0], shortErr, pair[1], longErr)
+		}
+	}
+}
+
 func TestParseStacksShortOptions(t *testing.T) {
 	got, err := Parse([]string{"-fnv", "backup"})
 	if err != nil {

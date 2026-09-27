@@ -214,6 +214,10 @@ func (o *Options) applyShortCluster(token string, next []string) (consumed int, 
 			// way the long form does rather than as an unknown option "-=".
 			return 0, usagef("%s does not take an argument", last)
 		}
+		// Every diagnostic below names the long form too, so that short and long
+		// spellings of one mistake are observably identical
+		// (appspec/02-invocation.md, "Invocation forms"). Only an unknown option
+		// letter, which has no long form, is reported as typed.
 		name, ok := shortToLong[token[j]]
 		if !ok {
 			return 0, usagef("unrecognized option: -%c", token[j])
@@ -233,13 +237,13 @@ func (o *Options) applyShortCluster(token string, next []string) (consumed int, 
 		value := strings.TrimPrefix(rest, "=")
 		if rest == "" {
 			if len(next) == 0 {
-				return 0, usagef("-%c requires an argument", token[j])
+				return 0, usagef("%s requires an argument", name)
 			}
 			value = next[0]
 			consumed = 1
 		}
 		if value == "" {
-			return 0, usagef("-%c requires a non-empty argument", token[j])
+			return 0, usagef("%s requires a non-empty argument", name)
 		}
 		configFile, hasConfigFile = value, true
 		break

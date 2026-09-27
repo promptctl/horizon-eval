@@ -25,8 +25,9 @@ the spec's, and `macklebox` is the project and module name only.
 ## Build
 
 ```sh
-make build   # ./bin/mackup
-make check   # gofmt + go vet + go test
+make build        # ./bin/mackup
+make check        # gofmt + go vet + go test (includes the conformance rig)
+make conformance  # the black-box rig alone, verbosely
 ```
 
 Go 1.25 or newer; no third-party dependencies.
@@ -37,6 +38,7 @@ Go 1.25 or newer; no third-party dependencies.
 |------|------------|
 | `appspec/` | The functional specification that drives the build (source of truth) |
 | `cmd/mackup/` | The command's entry point |
+| `conformance/` | The black-box rig: the real binary under a throwaway home, observed at the process boundary |
 | `internal/cli/` | The command-line boundary: grammar, options, dispatch, exit codes |
 | `internal/version/` | Version-string resolution |
 | `LICENSE`  | MIT |

@@ -7,7 +7,7 @@ GO      ?= go
 BIN     := bin/mackup
 PKG     := ./cmd/mackup
 
-.PHONY: all build test vet fmt check clean
+.PHONY: all build test conformance vet fmt check clean
 
 all: check
 
@@ -18,6 +18,11 @@ $(BIN): $(shell find . -name '*.go' -not -path './bin/*')
 
 test:
 	$(GO) test ./...
+
+# conformance runs the black-box rig alone: the real binary, under a throwaway
+# home, observed at the process boundary.
+conformance:
+	$(GO) test ./conformance/ -v
 
 vet:
 	$(GO) vet ./...
