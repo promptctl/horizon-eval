@@ -72,7 +72,11 @@ type Case struct {
 	Env   map[string]string
 	Home  map[string]string
 
-	Code   int
+	// Code is the required exit code, set with Exit. It is a pointer because an
+	// int's zero value is the success code: an error-path case that forgot to
+	// state its exit code would silently assert 0, and would start passing for
+	// the wrong reason the moment the command it exercises is implemented.
+	Code   *int
 	Stdout Check
 	Stderr Check
 
@@ -82,20 +86,26 @@ type Case struct {
 	HomeUnchanged bool
 }
 
+// Exit states a case's required exit code.
+func Exit(code int) *int { return &code }
+
 // RunCases runs every case as its own subtest.
 func RunCases(t *testing.T, cases []Case) {
 	t.Helper()
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
+			if c.Code == nil {
+				t.Fatal("case does not state an exit code; set Code: Exit(n)")
+			}
 			r := Run(t, Invocation{
 				Args:  c.Args,
 				Env:   c.Env,
 				Stdin: c.Stdin,
 				Home:  c.Home,
 			})
-			if r.Code != c.Code {
+			if r.Code != *c.Code {
 				t.Errorf("exit = %d, want %d (stdout %q, stderr %q)",
-					r.Code, c.Code, r.PlainStdout(), r.PlainStderr())
+					r.Code, *c.Code, r.PlainStdout(), r.PlainStderr())
 			}
 			if c.Stdout != nil {
 				c.Stdout(t, "stdout", r.PlainStdout())

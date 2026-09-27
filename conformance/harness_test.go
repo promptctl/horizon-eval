@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -50,8 +51,11 @@ func TestMain(m *testing.M) {
 type Invocation struct {
 	// Args is argv without the program name.
 	Args []string
-	// Env adds to or overrides the scrubbed base environment. Use it for the
-	// three variables the spec names: HOME, XDG_CONFIG_HOME, MACKUP_CONFIG.
+	// Env adds to or overrides the scrubbed base environment — XDG_CONFIG_HOME
+	// and MACKUP_CONFIG (appspec/03, appspec/05). HOME is the rig's to set: a
+	// case that overrode it would leave Home, HomeBefore, and the working
+	// directory pointing at a directory the program never read, so HomeUnchanged
+	// would assert nothing. Run rejects it.
 	Env map[string]string
 	// Stdin is what the program reads when it prompts.
 	Stdin string
@@ -96,18 +100,14 @@ func Run(t *testing.T, inv Invocation) Result {
 	home := t.TempDir()
 	seedHome(t, home, inv.Home)
 
-	env := map[string]string{
-		"HOME": home,
-		// Kept because appspec/06 and 07 have the program invoke external
-		// commands for filesystem attribute cleanup.
-		"PATH": os.Getenv("PATH"),
+	if _, ok := inv.Env["HOME"]; ok {
+		t.Fatalf("a case may not set HOME: Run owns the throwaway home, and the " +
+			"tree assertions are anchored to it. A case needing a different or " +
+			"unset HOME has to extend Invocation so those move with it.")
 	}
-	for k, v := range inv.Env {
-		env[k] = v
-	}
-	envv := make([]string, 0, len(env))
-	for k, v := range env {
-		envv = append(envv, k+"="+v)
+	envv, err := childEnv(home, inv.Env)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	before := Snapshot(t, home)
@@ -125,6 +125,13 @@ func Run(t *testing.T, inv Invocation) Result {
 		if !errors.As(err, &exitErr) {
 			t.Fatalf("running %v: %v", inv.Args, err)
 		}
+		// A signal death has no exit code, and ExitCode() reports -1 for it. Left
+		// as a code it would satisfy every "non-zero exit" assertion in the suite,
+		// so a crashing binary would be indistinguishable from a clean failure.
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			t.Fatalf("mackup %v was killed by signal %v\nstdout: %q\nstderr: %q",
+				inv.Args, status.Signal(), out.String(), errb.String())
+		}
 		code = exitErr.ExitCode()
 	}
 
@@ -137,12 +144,39 @@ func Run(t *testing.T, inv Invocation) Result {
 	}
 }
 
+// fixedPATH is the PATH every conformance run gets. appspec/06 makes behavior
+// conditional on the external attribute-cleanup commands (/bin/chmod,
+// /usr/bin/chflags), so inheriting the developer's PATH would let a shadowing
+// coreutils install change what the suite observes.
+const fixedPATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+// childEnv builds the environment for one run from nothing, so no variable the
+// developer happens to export can reach the program. Only HOME and PATH are
+// provided; a case adds the spec's other variables through Invocation.Env.
+func childEnv(home string, overrides map[string]string) ([]string, error) {
+	env := map[string]string{"HOME": home, "PATH": fixedPATH}
+	for k, v := range overrides {
+		if k == "HOME" {
+			return nil, fmt.Errorf("HOME is not a case's to set")
+		}
+		env[k] = v
+	}
+	envv := make([]string, 0, len(env))
+	for _, k := range sortedKeys(env) {
+		envv = append(envv, k+"="+env[k])
+	}
+	return envv, nil
+}
+
 // seedHome writes the files and directories a case wants in place before the
 // run. A path ending in "/" is a directory; any parent directories are created.
 func seedHome(t *testing.T, home string, tree map[string]string) {
 	t.Helper()
 	for path, contents := range tree {
-		full := filepath.Join(home, path)
+		full, err := resolveInHome(home, path)
+		if err != nil {
+			t.Fatalf("seeding %s: %v", path, err)
+		}
 		if strings.HasSuffix(path, "/") {
 			if err := os.MkdirAll(full, 0o700); err != nil {
 				t.Fatalf("seeding %s: %v", path, err)
@@ -158,14 +192,36 @@ func seedHome(t *testing.T, home string, tree map[string]string) {
 	}
 }
 
+// resolveInHome joins a home-relative seed path onto home, rejecting any path
+// that escapes it. filepath.Join cleans "..", so a key like "../outside.cfg"
+// would otherwise write into the temp parent that holds sibling cases' homes —
+// outside the sandbox, and outside what Snapshot walks, so HomeUnchanged could
+// not see it either.
+func resolveInHome(home, path string) (string, error) {
+	full := filepath.Join(home, path)
+	rel, err := filepath.Rel(home, full)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes the throwaway home")
+	}
+	return full, nil
+}
+
 // Snapshot records a directory tree's observable content, so a case can assert
 // that a run changed nothing — the post-condition appspec/07 states for every
 // error path and appspec/01 §3 states for --dry-run.
 //
 // Each key is a path relative to root. The value describes what is there: a
-// symlink's target, "dir", or a regular file's contents. Symlinks are recorded,
-// never followed, because whether a home path is a link is itself contract
-// (appspec/01 §2).
+// symlink's target, or a kind and permission mode followed by a file's contents.
+// Symlinks are recorded, never followed, because whether a home path is a link is
+// itself contract (appspec/01 §2).
+//
+// The mode is part of the value because appspec/06 "Attribute cleanup" has the
+// program chmod files and shell out to strip ACLs and immutable flags. Recording
+// contents alone would let a --dry-run that ran the attribute strip anyway, or an
+// error path that chmod-ed a file, pass HomeUnchanged with the bytes untouched.
 func Snapshot(t *testing.T, root string) map[string]string {
 	t.Helper()
 	tree := map[string]string{}
@@ -180,22 +236,30 @@ func Snapshot(t *testing.T, root string) map[string]string {
 		if rel == "." {
 			return nil
 		}
-		switch {
-		case d.Type()&os.ModeSymlink != 0:
+		if d.Type()&os.ModeSymlink != 0 {
 			target, err := os.Readlink(path)
 			if err != nil {
 				return err
 			}
+			// A symlink's own mode is not meaningful on the platforms appspec/00
+			// targets, and is not what any contract turns on.
 			tree[rel] = "link -> " + target
-		case d.IsDir():
-			tree[rel] = "dir"
-		default:
-			contents, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			tree[rel] = string(contents)
+			return nil
 		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if d.IsDir() {
+			tree[rel] = fmt.Sprintf("dir %04o", mode)
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		tree[rel] = fmt.Sprintf("file %04o %s", mode, contents)
 		return nil
 	})
 	if err != nil {

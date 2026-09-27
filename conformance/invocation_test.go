@@ -1,6 +1,10 @@
 package conformance
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
 
 // seeded is a small home tree used by cases that must leave home untouched.
 var seeded = map[string]string{
@@ -35,19 +39,30 @@ func TestHelp(t *testing.T) {
 	RunCases(t, []Case{
 		{
 			Name: "long form", Args: []string{"--help"},
-			Code: 0, Stdout: usage, Stderr: Empty(),
+			Code: Exit(0), Stdout: usage, Stderr: Empty(),
 			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			Name: "short form", Args: []string{"-h"},
-			Code: 0, Stdout: usage, Stderr: Empty(),
+			Code: Exit(0), Stdout: usage, Stderr: Empty(),
 			Home: seeded, HomeUnchanged: true,
 		},
 		{
-			// --help takes "no other action", so it survives a trailing
-			// positional the grammar does not accept.
+			// Ruling, recorded deliberately because appspec/02 can be read both
+			// ways. "anything that does not match one of the listed usage lines
+			// is a usage error" would make this argv an error, but --help is
+			// specified as "Print the usage/help text to stdout and exit 0. No
+			// other action", and the reference's parser behaves the same way: a
+			// stray positional alongside --help is tolerated, a malformed or
+			// unknown *option* is not. The two cases below pin both halves.
 			Name: "with an extra positional", Args: []string{"--help", "frobnicate"},
-			Code: 0, Stdout: usage, Stderr: Empty(),
+			Code: Exit(0), Stdout: usage, Stderr: Empty(),
+			Home: seeded, HomeUnchanged: true,
+		},
+		{
+			Name: "but not alongside an unknown option", Args: []string{"--help", "--frobnicate"},
+			Code: Exit(1), Stdout: Empty(), Stderr: InOrder("--frobnicate", "Usage:"),
+			Home: seeded, HomeUnchanged: true,
 		},
 	})
 }
@@ -59,7 +74,7 @@ func TestVersion(t *testing.T) {
 	RunCases(t, []Case{
 		{
 			Name: "prints the Mackup version line", Args: []string{"--version"},
-			Code: 0, Stdout: Exactly("Mackup unknown\n"), Stderr: Empty(),
+			Code: Exit(0), Stdout: Exactly("Mackup unknown\n"), Stderr: Empty(),
 			Home: seeded, HomeUnchanged: true,
 		},
 	})
@@ -72,19 +87,20 @@ func TestForceFlagsAreMutuallyExclusive(t *testing.T) {
 	RunCases(t, []Case{
 		{
 			Name: "long forms", Args: []string{"--force", "--force-no", "backup"},
-			Code: 1, Stdout: Empty(), Stderr: line,
+			Code: Exit(1), Stdout: Empty(), Stderr: line,
 			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			Name: "short force with long force-no", Args: []string{"-f", "--force-no", "list"},
-			Code: 1, Stdout: Empty(), Stderr: line,
+			Code: Exit(1), Stdout: Empty(), Stderr: line,
 			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			// Rejected before config load, so the command named makes no
 			// difference and neither does an unreadable config.
 			Name: "before config load", Args: []string{"--force-no", "--force", "restore", "vim"},
-			Code: 1, Stdout: Empty(), Stderr: line,
+			Code: Exit(1), Stdout: Empty(), Stderr: line,
+			Home: seeded, HomeUnchanged: true,
 		},
 	})
 }
@@ -96,50 +112,56 @@ func TestUsageErrors(t *testing.T) {
 	RunCases(t, []Case{
 		{
 			Name: "unrecognized subcommand", Args: []string{"frobnicate"},
-			Code: 1, Stdout: Empty(),
+			Code: Exit(1), Stdout: Empty(),
 			Stderr: InOrder("frobnicate", "Usage:"),
 			Home:   seeded, HomeUnchanged: true,
 		},
 		{
 			Name: "show with no application", Args: []string{"show"},
-			Code: 1, Stdout: Empty(), Stderr: Contains("Usage:"),
+			Code: Exit(1), Stdout: Empty(), Stderr: Contains("Usage:"),
 			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			Name: "too many positionals", Args: []string{"show", "vim", "git"},
-			Code: 1, Stdout: Empty(), Stderr: InOrder("git", "Usage:"),
+			Code: Exit(1), Stdout: Empty(), Stderr: InOrder("git", "Usage:"),
+			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			Name: "list takes no application", Args: []string{"list", "vim"},
-			Code: 1, Stdout: Empty(), Stderr: InOrder("vim", "Usage:"),
+			Code: Exit(1), Stdout: Empty(), Stderr: InOrder("vim", "Usage:"),
+			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			Name: "unrecognized option", Args: []string{"--frobnicate", "list"},
-			Code: 1, Stdout: Empty(), Stderr: InOrder("--frobnicate", "Usage:"),
+			Code: Exit(1), Stdout: Empty(), Stderr: InOrder("--frobnicate", "Usage:"),
+			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			// A malformed --help token matches no usage line, so it must not
 			// short-circuit to a successful help display.
 			Name: "help given a value", Args: []string{"--help=1"},
-			Code: 1, Stdout: Empty(), Stderr: InOrder("--help", "Usage:"),
+			Code: Exit(1), Stdout: Empty(), Stderr: InOrder("--help", "Usage:"),
+			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			// A typo'd option is reported even alongside --version.
 			Name: "unrecognized option with version", Args: []string{"--version", "--frobnicate"},
-			Code: 1, Stdout: Empty(), Stderr: InOrder("--frobnicate", "Usage:"),
+			Code: Exit(1), Stdout: Empty(), Stderr: InOrder("--frobnicate", "Usage:"),
+			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			// An empty application key must not read as "no application given",
 			// which would silently widen the run to the whole configured set.
 			Name: "empty application key", Args: []string{"backup", ""},
-			Code: 1, Stdout: Empty(), Stderr: Contains("Usage:"),
+			Code: Exit(1), Stdout: Empty(), Stderr: Contains("Usage:"),
 			Home: seeded, HomeUnchanged: true,
 		},
 		{
 			// An empty config path must not read as "no --config-file given",
 			// which would fall back to default discovery.
 			Name: "empty config path", Args: []string{"--config-file=", "list"},
-			Code: 1, Stdout: Empty(), Stderr: Contains("Usage:"),
+			Code: Exit(1), Stdout: Empty(), Stderr: Contains("Usage:"),
+			Home: seeded, HomeUnchanged: true,
 		},
 	})
 }
@@ -149,7 +171,7 @@ func TestBareInvocation(t *testing.T) {
 	RunCases(t, []Case{
 		{
 			Name: "shows usage", Args: nil,
-			Code: 0, Stdout: Contains("Usage:"),
+			Code: Exit(0), Stdout: Contains("Usage:"),
 			Home: seeded, HomeUnchanged: true,
 		},
 	})
@@ -204,33 +226,45 @@ func TestOnlyHelpAndVersionBypassTheConfigGate(t *testing.T) {
 		{"link", "install"},
 		{"link", "uninstall"},
 	} {
-		r := Run(t, Invocation{Args: args, Home: seeded})
-		if r.Code == 0 {
-			t.Errorf("%v: exit 0, want non-zero — no command is implemented yet, so none may report success", args)
-		}
-		if r.PlainStdout() != "" {
-			t.Errorf("%v: stdout = %q, want empty", args, r.PlainStdout())
-		}
-		if r.PlainStderr() == "" {
-			t.Errorf("%v: stderr empty, want a diagnostic", args)
-		}
-		AssertUnchanged(t, r.Home, r.HomeBefore)
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			r := Run(t, Invocation{Args: args, Home: seeded})
+			// Exactly 1, appspec/02's fatal code — not merely non-zero, which a
+			// panicking binary would also satisfy.
+			if r.Code != 1 {
+				t.Errorf("exit = %d, want 1 — no command is implemented yet, so none may report success", r.Code)
+			}
+			if r.PlainStdout() != "" {
+				t.Errorf("stdout = %q, want empty", r.PlainStdout())
+			}
+			if r.PlainStderr() == "" {
+				t.Error("stderr empty, want a diagnostic")
+			}
+			AssertUnchanged(t, r.Home, r.HomeBefore)
+		})
 	}
 }
 
-// The environment the rig hands the program is built from scratch, so a
-// developer's own settings cannot change what a conformance run observes.
-func TestRigScrubsTheEnvironment(t *testing.T) {
-	r := Run(t, Invocation{Args: []string{"--version"}})
-	if r.Home == "" {
-		t.Fatal("no throwaway home was created")
-	}
-	// A case that wants one of the spec's variables sets it explicitly.
-	withVar := Run(t, Invocation{
-		Args: []string{"--version"},
-		Env:  map[string]string{"MACKUP_CONFIG": "elsewhere.cfg"},
+// A case may name the spec's other environment variables, and they reach the
+// program. HOME is the rig's, and Run refuses a case that tries to take it.
+func TestEnvOverridesReachTheProgramButHomeIsTheRigs(t *testing.T) {
+	env, err := childEnv("/tmp/home", map[string]string{
+		"XDG_CONFIG_HOME": "/tmp/home/.config",
+		"MACKUP_CONFIG":   "/tmp/home/other.cfg",
 	})
-	if withVar.PlainStdout() != r.PlainStdout() {
-		t.Errorf("MACKUP_CONFIG changed --version output: %q vs %q", withVar.PlainStdout(), r.PlainStdout())
+	if err != nil {
+		t.Fatalf("childEnv: %v", err)
+	}
+	want := []string{
+		"HOME=/tmp/home",
+		"MACKUP_CONFIG=/tmp/home/other.cfg",
+		"PATH=" + fixedPATH,
+		"XDG_CONFIG_HOME=/tmp/home/.config",
+	}
+	if !reflect.DeepEqual(env, want) {
+		t.Errorf("childEnv = %q, want %q", env, want)
+	}
+
+	if _, err := childEnv("/tmp/home", map[string]string{"HOME": "/elsewhere"}); err == nil {
+		t.Error("childEnv accepted a HOME override; the tree assertions are anchored to the rig's home")
 	}
 }

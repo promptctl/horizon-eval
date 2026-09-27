@@ -96,6 +96,26 @@ var shortToLong = map[byte]string{
 	'c': "--config-file",
 }
 
+// longToShort is shortToLong inverted, for naming an option in a diagnostic.
+var longToShort = func() map[string]byte {
+	inverted := make(map[string]byte, len(shortToLong))
+	for short, long := range shortToLong {
+		inverted[long] = short
+	}
+	return inverted
+}()
+
+// spell names an option the way a diagnostic should: both spellings when it has
+// two, so one mistake reads identically however it was typed
+// (appspec/02-invocation.md, "Invocation forms") without pointing the user at a
+// form they did not use.
+func spell(long string) string {
+	if short, ok := longToShort[long]; ok {
+		return fmt.Sprintf("-%c/%s", short, long)
+	}
+	return long
+}
+
 // Parse turns argv (without the program name) into Options. It reports a usage
 // error for any argv matching none of the spec's invocation forms.
 //
@@ -131,14 +151,14 @@ func Parse(argv []string) (Options, error) {
 			case valued[name]:
 				if !hasValue {
 					if i+1 >= len(argv) {
-						fail(usagef("%s requires an argument", name))
+						fail(usagef("%s requires an argument", spell(name)))
 						continue
 					}
 					i++
 					value = argv[i]
 				}
 				if value == "" {
-					fail(usagef("%s requires a non-empty argument", name))
+					fail(usagef("%s requires a non-empty argument", spell(name)))
 					continue
 				}
 				opts.ConfigFile = value
@@ -146,7 +166,7 @@ func Parse(argv []string) (Options, error) {
 				// Reject before setting the flag: an accepted --help=1 would
 				// otherwise short-circuit the run and discard this error.
 				if hasValue {
-					fail(usagef("%s does not take an argument", name))
+					fail(usagef("%s does not take an argument", spell(name)))
 					continue
 				}
 				longFlags[name](&opts)
@@ -212,12 +232,12 @@ func (o *Options) applyShortCluster(token string, next []string) (consumed int, 
 		if token[j] == '=' && last != "" {
 			// -v=yes: the flag is real, the value is not allowed. Report it the
 			// way the long form does rather than as an unknown option "-=".
-			return 0, usagef("%s does not take an argument", last)
+			return 0, usagef("%s does not take an argument", spell(last))
 		}
-		// Every diagnostic below names the long form too, so that short and long
-		// spellings of one mistake are observably identical
-		// (appspec/02-invocation.md, "Invocation forms"). Only an unknown option
-		// letter, which has no long form, is reported as typed.
+		// Every diagnostic below names the option through spell, so that short and
+		// long spellings of one mistake are observably identical. Only an unknown
+		// option letter is reported as typed: it names no known option, so there
+		// is no long form to pair it with.
 		name, ok := shortToLong[token[j]]
 		if !ok {
 			return 0, usagef("unrecognized option: -%c", token[j])
@@ -237,13 +257,13 @@ func (o *Options) applyShortCluster(token string, next []string) (consumed int, 
 		value := strings.TrimPrefix(rest, "=")
 		if rest == "" {
 			if len(next) == 0 {
-				return 0, usagef("%s requires an argument", name)
+				return 0, usagef("%s requires an argument", spell(name))
 			}
 			value = next[0]
 			consumed = 1
 		}
 		if value == "" {
-			return 0, usagef("%s requires a non-empty argument", name)
+			return 0, usagef("%s requires a non-empty argument", spell(name))
 		}
 		configFile, hasConfigFile = value, true
 		break
