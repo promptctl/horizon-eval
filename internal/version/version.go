@@ -27,15 +27,17 @@ func String() string {
 // resolve picks the reported version from a link-time stamp and the module
 // version recorded in the build, so the choice is testable without a build.
 func resolve(stamp, build string) string {
+	// Neither source is v-prefixed in the reported version
+	// (appspec/00-overview.md: "Mackup 0.11.1", never "Mackup v0.11.1"). Go
+	// module versions always carry the prefix, and the natural way to stamp a
+	// release — -X ...override=$(git describe --tags) — carries it too.
 	if stamp != "" {
-		return stamp
+		return strings.TrimPrefix(stamp, "v")
 	}
 	switch build {
 	case "", "(devel)", "devel":
 		// Built from a tree, not installed as a module version.
 		return Fallback
 	}
-	// Go module versions are v-prefixed; the reported version is not
-	// (appspec/00-overview.md: "Mackup 0.11.1", never "Mackup v0.11.1").
 	return strings.TrimPrefix(build, "v")
 }

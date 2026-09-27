@@ -16,6 +16,7 @@ func TestResolve(t *testing.T) {
 		{"prerelease module version", "", "v1.2.3-rc.1", "1.2.3-rc.1"},
 		{"unprefixed build version is left alone", "", "0.11.1", "0.11.1"},
 		{"a link-time stamp wins", "0.11.1", "v9.9.9", "0.11.1"},
+		{"a v-prefixed stamp loses its prefix too", "v0.11.1", "", "0.11.1"},
 		{"a link-time stamp wins over no build info", "0.11.1", "", "0.11.1"},
 	}
 	for _, tt := range tests {

@@ -1,6 +1,9 @@
 package cli
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Command identifies one of the invocation forms in appspec/02-invocation.md.
 type Command int
@@ -158,40 +161,12 @@ func Parse(argv []string) (Options, error) {
 			}
 
 		case len(arg) > 1 && arg[0] == '-':
-			// A short-option cluster: valueless flags may be stacked, and the
-			// last one may take the rest of the token or the next argv entry as
-			// its value (-c path, -cpath).
-			for j := 1; j < len(arg); j++ {
-				name, ok := shortToLong[arg[j]]
-				if !ok {
-					fail(usagef("unrecognized option: -%c", arg[j]))
-					break
-				}
-				if !valued[name] {
-					setter := longFlags[name]
-					if setter == nil {
-						fail(usagef("unrecognized option: -%c", arg[j]))
-						break
-					}
-					setter(&opts)
-					continue
-				}
-				value := arg[j+1:]
-				if value == "" {
-					if i+1 >= len(argv) {
-						fail(usagef("-%c requires an argument", arg[j]))
-						break
-					}
-					i++
-					value = argv[i]
-				}
-				if value == "" {
-					fail(usagef("-%c requires a non-empty argument", arg[j]))
-					break
-				}
-				opts.ConfigFile = value
-				break
+			consumed, err := opts.applyShortCluster(arg, argv[i+1:])
+			if err != nil {
+				fail(err)
+				continue
 			}
+			i += consumed
 
 		default:
 			positional = append(positional, arg)
@@ -220,6 +195,61 @@ func splitLongOption(arg string) (name, value string, hasValue bool) {
 		}
 	}
 	return arg, "", false
+}
+
+// applyShortCluster parses one short-option token: -f, a stack like -fnv, or a
+// valued option as -c path, -cpath, or -c=path. next is the remaining argv, and
+// consumed says how many of its entries the token took as its value.
+//
+// The whole token is validated before anything is set. A token that half-applies
+// and then fails is the bug -h=1 was: Help would be set, and Parse's
+// help/version short-circuit would discard the error and exit 0, while the long
+// form --help=1 correctly reported a usage error.
+func (o *Options) applyShortCluster(token string, next []string) (consumed int, err error) {
+	var setters []func(*Options)
+	var configFile string
+	var hasConfigFile bool
+
+	for j := 1; j < len(token); j++ {
+		name, ok := shortToLong[token[j]]
+		if !ok {
+			return 0, usagef("unrecognized option: -%c", token[j])
+		}
+		if !valued[name] {
+			setter := longFlags[name]
+			if setter == nil {
+				return 0, usagef("unrecognized option: -%c", token[j])
+			}
+			setters = append(setters, setter)
+			continue
+		}
+		// A valued option takes the rest of the token, or the next argv entry.
+		// The "=" spelling is stripped so -c=path means what --config-file=path
+		// means: short and long forms are interchangeable
+		// (appspec/02-invocation.md, "Invocation forms").
+		rest := token[j+1:]
+		value := strings.TrimPrefix(rest, "=")
+		if rest == "" {
+			if len(next) == 0 {
+				return 0, usagef("-%c requires an argument", token[j])
+			}
+			value = next[0]
+			consumed = 1
+		}
+		if value == "" {
+			return 0, usagef("-%c requires a non-empty argument", token[j])
+		}
+		configFile, hasConfigFile = value, true
+		break
+	}
+
+	for _, set := range setters {
+		set(o)
+	}
+	if hasConfigFile {
+		o.ConfigFile = configFile
+	}
+	return consumed, nil
 }
 
 // resolveCommand binds the positional arguments to one invocation form.
@@ -277,6 +307,13 @@ func (o *Options) takeApplication(rest []string, max int) error {
 		return usagef("unrecognized argument: %s", rest[max])
 	}
 	if len(rest) == 1 && max == 1 {
+		// An empty key must not read as "no application given", which would
+		// silently widen the run from one app to the whole configured set
+		// (appspec/02-invocation.md, "Selecting which applications a command
+		// acts on").
+		if rest[0] == "" {
+			return usagef("<application> cannot be empty")
+		}
 		o.Application = rest[0]
 	}
 	return nil

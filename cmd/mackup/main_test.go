@@ -22,15 +22,19 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(dir)
 
 	binary = filepath.Join(dir, "mackup")
 	build := exec.Command("go", "build", "-o", binary, ".")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
+		os.RemoveAll(dir)
 		panic(err)
 	}
-	os.Exit(m.Run())
+
+	// os.Exit skips deferred calls, so the cleanup is explicit.
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // invoke runs the built command and returns what a caller observes.

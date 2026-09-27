@@ -50,6 +50,7 @@ func TestParseShortAndLongFormsAreEquivalent(t *testing.T) {
 		{{"-v", "backup"}, {"--verbose", "backup"}},
 		{{"-c", "/home/u/.mackup.cfg", "backup"}, {"--config-file", "/home/u/.mackup.cfg", "backup"}},
 		{{"-c/home/u/.mackup.cfg", "backup"}, {"--config-file=/home/u/.mackup.cfg", "backup"}},
+		{{"-c=/home/u/.mackup.cfg", "backup"}, {"--config-file=/home/u/.mackup.cfg", "backup"}},
 		{{"-h"}, {"--help"}},
 	}
 	for _, pair := range pairs {
@@ -65,6 +66,21 @@ func TestParseShortAndLongFormsAreEquivalent(t *testing.T) {
 		}
 		if short != long {
 			t.Errorf("Parse(%q) = %+v, Parse(%q) = %+v; want identical", pair[0], short, pair[1], long)
+		}
+	}
+}
+
+// A token that fails validation must not leave any of its flags set, or the
+// help/version short-circuit would swallow the error.
+func TestParseAppliesNothingFromAMalformedShortCluster(t *testing.T) {
+	for _, argv := range [][]string{{"-h=1"}, {"-fz", "list"}, {"-vc"}} {
+		got, err := Parse(argv)
+		if err == nil {
+			t.Errorf("Parse(%q) = %+v, want a usage error", argv, got)
+			continue
+		}
+		if got != (Options{}) {
+			t.Errorf("Parse(%q) set %+v, want nothing applied", argv, got)
 		}
 	}
 }
@@ -132,6 +148,16 @@ func TestParseRejectsNonMatchingArgv(t *testing.T) {
 		// "no --config-file given", which would fall back to default discovery.
 		{"empty long config-file value", []string{"--config-file=", "list"}},
 		{"empty short config-file value", []string{"-c", "", "list"}},
+		{"empty short config-file = value", []string{"-c=", "list"}},
+		// Short and long forms must agree: a malformed short help token is a
+		// usage error too, and must not half-apply and then exit 0.
+		{"short help given a value", []string{"-h=1"}},
+		{"short flag given a value", []string{"-v=yes", "list"}},
+		// An empty application key would silently widen a single-app run to the
+		// whole configured set.
+		{"empty application key", []string{"backup", ""}},
+		{"empty application key for show", []string{"show", ""}},
+		{"empty escaped application key", []string{"backup", "--", ""}},
 	}
 	for _, tt := range tests {
 		if _, err := Parse(tt.argv); err == nil {
