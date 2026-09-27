@@ -167,13 +167,13 @@ func TestParseRejectsNonMatchingArgv(t *testing.T) {
 }
 
 // --help and --version are specified to print and exit taking "no other
-// action", so they outrank a non-matching grammar.
-func TestParseHelpAndVersionOutrankGrammarErrors(t *testing.T) {
+// action", so they short-circuit a non-matching grammar.
+func TestParseHelpAndVersionShortCircuitGrammarErrors(t *testing.T) {
 	for _, argv := range [][]string{
 		{"--help", "frobnicate"},
 		{"--version", "frobnicate"},
 		{"show", "--help"},
-		{"--frobnicate", "--help"},
+		{"list", "extra", "--version"},
 	} {
 		got, err := Parse(argv)
 		if err != nil {
@@ -182,6 +182,21 @@ func TestParseHelpAndVersionOutrankGrammarErrors(t *testing.T) {
 		}
 		if !got.Help && !got.Version {
 			t.Errorf("Parse(%q) = %+v, want Help or Version set", argv, got)
+		}
+	}
+}
+
+// They do not rescue a malformed option, though: a typo'd option matches no
+// usage line and must not be silently accepted.
+func TestParseHelpAndVersionDoNotRescueOptionErrors(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--frobnicate", "--help"},
+		{"--help", "--frobnicate"},
+		{"--version", "--frobnicate"},
+		{"-z", "--help"},
+	} {
+		if got, err := Parse(argv); err == nil {
+			t.Errorf("Parse(%q) = %+v, want a usage error", argv, got)
 		}
 	}
 }
@@ -198,19 +213,18 @@ func TestParseDoubleDashEndsOptions(t *testing.T) {
 	}
 }
 
-// An escaped positional is only ever an application key: past "--" the words
-// install and uninstall lose their subcommand reading.
-func TestParseDoubleDashProtectsPositionalsFromSubcommandResolution(t *testing.T) {
+// "--" ends option parsing and nothing else: it does not change how positionals
+// bind to the grammar, so a subcommand word after it is still the subcommand.
+func TestParseDoubleDashDoesNotChangePositionalBinding(t *testing.T) {
 	tests := []struct {
 		argv []string
 		want Options
 	}{
-		{[]string{"link", "--", "install"}, Options{Command: CmdLink, Application: "install"}},
-		{[]string{"link", "--", "uninstall"}, Options{Command: CmdLink, Application: "uninstall"}},
-		// Unescaped, the same words are the subcommand.
-		{[]string{"link", "install"}, Options{Command: CmdLinkInstall}},
-		// The command word has no second reading, so it resolves either way.
+		{[]string{"link", "--", "install"}, Options{Command: CmdLinkInstall}},
+		{[]string{"link", "--", "uninstall", "vim"}, Options{Command: CmdLinkUninstall, Application: "vim"}},
+		{[]string{"--", "link", "install"}, Options{Command: CmdLinkInstall}},
 		{[]string{"--", "list"}, Options{Command: CmdList}},
+		{[]string{"--", "backup", "vim"}, Options{Command: CmdBackup, Application: "vim"}},
 	}
 	for _, tt := range tests {
 		got, err := Parse(tt.argv)

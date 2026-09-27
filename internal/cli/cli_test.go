@@ -15,9 +15,9 @@ type capture struct {
 	code     int
 }
 
-// exec runs argv with a recording config loader, so a test can assert both the
+// runCLI runs argv with a recording config loader, so a test can assert both the
 // streams and whether the run reached the config-load step.
-func exec(argv []string, loadErr error) *capture {
+func runCLI(argv []string, loadErr error) *capture {
 	c := &capture{}
 	load := func(Options) (config, error) {
 		c.loaded = true
@@ -29,7 +29,7 @@ func exec(argv []string, loadErr error) *capture {
 
 func TestHelpPrintsUsageToStdoutAndExitsZero(t *testing.T) {
 	for _, argv := range [][]string{{"-h"}, {"--help"}} {
-		c := exec(argv, nil)
+		c := runCLI(argv, nil)
 		if c.code != ExitOK {
 			t.Errorf("%q: exit %d, want %d", argv, c.code, ExitOK)
 		}
@@ -46,7 +46,7 @@ func TestHelpPrintsUsageToStdoutAndExitsZero(t *testing.T) {
 }
 
 func TestVersionPrintsVersionLineToStdoutAndExitsZero(t *testing.T) {
-	c := exec([]string{"--version"}, nil)
+	c := runCLI([]string{"--version"}, nil)
 	if c.code != ExitOK {
 		t.Errorf("exit %d, want %d", c.code, ExitOK)
 	}
@@ -64,7 +64,7 @@ func TestVersionPrintsVersionLineToStdoutAndExitsZero(t *testing.T) {
 
 // The literal line, on stderr, exit 1, before config load.
 func TestConflictingForceFlagsAreRejectedBeforeConfigLoad(t *testing.T) {
-	c := exec([]string{"--force", "--force-no", "backup"}, nil)
+	c := runCLI([]string{"--force", "--force-no", "backup"}, nil)
 	if c.code != ExitFatal {
 		t.Errorf("exit %d, want %d", c.code, ExitFatal)
 	}
@@ -80,7 +80,7 @@ func TestConflictingForceFlagsAreRejectedBeforeConfigLoad(t *testing.T) {
 }
 
 func TestConflictingForceFlagsAcceptShortForm(t *testing.T) {
-	c := exec([]string{"-f", "--force-no", "list"}, nil)
+	c := runCLI([]string{"-f", "--force-no", "list"}, nil)
 	if c.code != ExitFatal || c.err.String() != ForceConflictMessage+"\n" {
 		t.Errorf("exit %d stderr %q, want %d and the conflict line", c.code, c.err.String(), ExitFatal)
 	}
@@ -89,7 +89,7 @@ func TestConflictingForceFlagsAcceptShortForm(t *testing.T) {
 // An unrecognized subcommand: a warning line naming the unmatched argument,
 // then the usage block, both on stderr.
 func TestUnrecognizedCommandWarnsThenPrintsUsage(t *testing.T) {
-	c := exec([]string{"frobnicate"}, nil)
+	c := runCLI([]string{"frobnicate"}, nil)
 	if c.code != ExitFatal {
 		t.Errorf("exit %d, want %d", c.code, ExitFatal)
 	}
@@ -112,7 +112,7 @@ func TestUnrecognizedCommandWarnsThenPrintsUsage(t *testing.T) {
 }
 
 func TestShowWithoutApplicationIsAUsageError(t *testing.T) {
-	c := exec([]string{"show"}, nil)
+	c := runCLI([]string{"show"}, nil)
 	if c.code != ExitFatal {
 		t.Errorf("exit %d, want %d", c.code, ExitFatal)
 	}
@@ -123,7 +123,7 @@ func TestShowWithoutApplicationIsAUsageError(t *testing.T) {
 
 // A bare invocation is a usage display: the usage block, exit 0.
 func TestBareInvocationShowsUsage(t *testing.T) {
-	c := exec(nil, nil)
+	c := runCLI(nil, nil)
 	if c.code != ExitOK {
 		t.Errorf("exit %d, want %d", c.code, ExitOK)
 	}
@@ -146,7 +146,7 @@ func TestEveryCommandLoadsConfigBeforeDispatch(t *testing.T) {
 		{"link", "install"},
 		{"link", "uninstall", "vim"},
 	} {
-		c := exec(argv, nil)
+		c := runCLI(argv, nil)
 		if !c.loaded {
 			t.Errorf("%q: did not load config, want config loaded before dispatch", argv)
 		}
@@ -157,7 +157,7 @@ func TestEveryCommandLoadsConfigBeforeDispatch(t *testing.T) {
 // stderr, nothing on stdout, and a non-zero exit.
 func TestFatalConfigErrorAbortsEveryCommand(t *testing.T) {
 	for _, argv := range [][]string{{"list"}, {"show", "vim"}, {"backup", "vim"}} {
-		c := exec(argv, errors.New("Error: Unable to find the storage folder: /nope"))
+		c := runCLI(argv, errors.New("Error: Unable to find the storage folder: /nope"))
 		if c.code == ExitOK {
 			t.Errorf("%q: exit %d, want non-zero", argv, c.code)
 		}
@@ -175,17 +175,23 @@ func TestFatalConfigErrorAbortsEveryCommand(t *testing.T) {
 // must print the error's own text rather than reshaping it.
 func TestFatalConfigErrorIsPrintedVerbatim(t *testing.T) {
 	multiline := "Unable to find your Dropbox =(\nhttps://example.invalid/doc"
-	c := exec([]string{"list"}, errors.New(multiline))
+	c := runCLI([]string{"list"}, errors.New(multiline))
 	if got, want := c.err.String(), multiline+"\n"; got != want {
 		t.Errorf("stderr = %q, want %q", got, want)
 	}
 }
 
-// A malformed --help/--version token matches no usage line, so it is a usage
-// error and must not short-circuit to a successful help or version display.
+// A malformed --help/--version token, or a typo'd option alongside one, matches
+// no usage line, so it is a usage error and must not short-circuit to a
+// successful help or version display.
 func TestMalformedHelpAndVersionTokensAreUsageErrors(t *testing.T) {
-	for _, argv := range [][]string{{"--help=1"}, {"--version=1"}} {
-		c := exec(argv, nil)
+	for _, argv := range [][]string{
+		{"--help=1"},
+		{"--version=1"},
+		{"--frobnicate", "--help"},
+		{"--version", "--frobnicate"},
+	} {
+		c := runCLI(argv, nil)
 		if c.code != ExitFatal {
 			t.Errorf("%q: exit %d, want %d", argv, c.code, ExitFatal)
 		}
@@ -200,7 +206,7 @@ func TestMalformedHelpAndVersionTokensAreUsageErrors(t *testing.T) {
 
 // Until the commands land, a recognized command must not report success.
 func TestUnimplementedCommandDoesNotReportSuccess(t *testing.T) {
-	c := exec([]string{"list"}, nil)
+	c := runCLI([]string{"list"}, nil)
 	if c.code == ExitOK {
 		t.Errorf("exit %d, want non-zero while the command is unimplemented", c.code)
 	}

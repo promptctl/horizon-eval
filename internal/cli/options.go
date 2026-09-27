@@ -61,16 +61,12 @@ type Options struct {
 	Application string
 }
 
-// usageError is a non-matching argv: the program prints the offending argument
-// and the usage block (appspec/02-invocation.md, "Argument-parser behavior").
-// Every error Parse reports is one, which is what makes the usage block the
-// right response to all of them.
-type usageError struct{ msg string }
-
-func (e *usageError) Error() string { return e.msg }
-
+// usagef builds a usage error: a non-matching argv, for which the program prints
+// the offending argument and the usage block (appspec/02-invocation.md,
+// "Argument-parser behavior"). Every error Parse reports is one of these, which
+// is what makes the usage block the right response to all of them.
 func usagef(format string, args ...any) error {
-	return &usageError{msg: fmt.Sprintf(format, args...)}
+	return fmt.Errorf(format, args...)
 }
 
 // valued names the long options that take an argument.
@@ -104,18 +100,17 @@ var shortToLong = map[byte]string{
 // error for any argv matching none of the spec's invocation forms.
 //
 // Options may appear before or after the subcommand, and a lone "--" ends option
-// parsing. --help/--version are honored alongside an otherwise non-matching
-// argv, because they are specified to print and exit taking "no other action" —
-// but a malformed --help/--version token (--help=1) is not one of them and is a
-// usage error like any other.
+// parsing — POSIX's meaning, so a later argument may begin with a dash; it does
+// not change how positionals bind to the grammar.
+//
+// --help/--version short-circuit past a positional the grammar does not accept,
+// because they are specified to print and exit taking "no other action". They do
+// not rescue a malformed option: --help=1 and --frobnicate --help match no usage
+// line, so they are usage errors like any other.
 func Parse(argv []string) (Options, error) {
 	var opts Options
 	var positional []string
 	var optErr error
-
-	// escapeAt is the index in positional at which "--"-escaped arguments begin,
-	// or -1 when no "--" was given.
-	escapeAt := -1
 
 	fail := func(err error) {
 		if optErr == nil {
@@ -127,7 +122,6 @@ func Parse(argv []string) (Options, error) {
 		arg := argv[i]
 		switch {
 		case arg == "--":
-			escapeAt = len(positional)
 			positional = append(positional, argv[i+1:]...)
 			i = len(argv)
 
@@ -173,15 +167,18 @@ func Parse(argv []string) (Options, error) {
 		}
 	}
 
-	// --help and --version print and exit without taking any other action, so
-	// they outrank a non-matching grammar.
-	if opts.Help || opts.Version {
-		return opts, nil
-	}
+	// An unrecognized or malformed option is reported even alongside
+	// --help/--version: it matches no usage line, and silently accepting a
+	// typo'd option would be worse than the help text is useful.
 	if optErr != nil {
 		return opts, optErr
 	}
-	if err := opts.resolveCommand(positional, escapeAt); err != nil {
+	// Past that, --help and --version print and exit without taking any other
+	// action, so they short-circuit the grammar.
+	if opts.Help || opts.Version {
+		return opts, nil
+	}
+	if err := opts.resolveCommand(positional); err != nil {
 		return opts, err
 	}
 	return opts, nil
@@ -210,11 +207,18 @@ func (o *Options) applyShortCluster(token string, next []string) (consumed int, 
 	var configFile string
 	var hasConfigFile bool
 
+	last := ""
 	for j := 1; j < len(token); j++ {
+		if token[j] == '=' && last != "" {
+			// -v=yes: the flag is real, the value is not allowed. Report it the
+			// way the long form does rather than as an unknown option "-=".
+			return 0, usagef("%s does not take an argument", last)
+		}
 		name, ok := shortToLong[token[j]]
 		if !ok {
 			return 0, usagef("unrecognized option: -%c", token[j])
 		}
+		last = name
 		if !valued[name] {
 			setter := longFlags[name]
 			if setter == nil {
@@ -253,18 +257,11 @@ func (o *Options) applyShortCluster(token string, next []string) (consumed int, 
 }
 
 // resolveCommand binds the positional arguments to one invocation form.
-//
-// escapeAt is Parse's "--" boundary: a positional at or past it was escaped by
-// the user, so it is only ever an application key, never a subcommand word. The
-// command word itself is always resolved, escaped or not, because it has no
-// second reading.
-func (o *Options) resolveCommand(positional []string, escapeAt int) error {
+func (o *Options) resolveCommand(positional []string) error {
 	if len(positional) == 0 {
 		o.Command = CmdNone
 		return nil
 	}
-	escaped := func(i int) bool { return escapeAt >= 0 && i >= escapeAt }
-
 	rest := positional[1:]
 	switch positional[0] {
 	case "list":
@@ -284,7 +281,7 @@ func (o *Options) resolveCommand(positional []string, escapeAt int) error {
 		return o.takeApplication(rest, 1)
 	case "link":
 		o.Command = CmdLink
-		if len(rest) > 0 && !escaped(1) {
+		if len(rest) > 0 {
 			switch rest[0] {
 			case "install":
 				o.Command = CmdLinkInstall
