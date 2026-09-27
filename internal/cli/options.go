@@ -220,11 +220,9 @@ func (o *Options) applyShortCluster(token string, next []string) (consumed int, 
 		}
 		last = name
 		if !valued[name] {
-			setter := longFlags[name]
-			if setter == nil {
-				return 0, usagef("unrecognized option: -%c", token[j])
-			}
-			setters = append(setters, setter)
+			// Every shortToLong value is a key of longFlags or of valued, which
+			// TestEveryShortOptionHasALongForm holds to.
+			setters = append(setters, longFlags[name])
 			continue
 		}
 		// A valued option takes the rest of the token, or the next argv entry.

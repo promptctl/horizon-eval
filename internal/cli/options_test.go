@@ -85,6 +85,20 @@ func TestParseAppliesNothingFromAMalformedShortCluster(t *testing.T) {
 	}
 }
 
+// The option tables are three maps that have to agree: every short option must
+// name a long option that is either valued or has a setter. Holding that here
+// makes a new short alias fail at test time rather than parse to a silent no-op.
+func TestEveryShortOptionHasALongForm(t *testing.T) {
+	for short, long := range shortToLong {
+		if valued[long] {
+			continue
+		}
+		if longFlags[long] == nil {
+			t.Errorf("-%c maps to %s, which is neither valued nor in longFlags", short, long)
+		}
+	}
+}
+
 func TestParseStacksShortOptions(t *testing.T) {
 	got, err := Parse([]string{"-fnv", "backup"})
 	if err != nil {
