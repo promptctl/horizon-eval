@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -139,6 +141,9 @@ func TestResolveInHomeRejectsEscapingPaths(t *testing.T) {
 		"../outside.cfg",
 		"..",
 		"nested/../../outside.cfg",
+		// Names the home itself rather than an entry in it.
+		".",
+		"nested/..",
 	} {
 		if got, err := resolveInHome(home, path); err == nil {
 			t.Errorf("resolveInHome(%q) = %q, want it rejected", path, got)
@@ -149,10 +154,10 @@ func TestResolveInHomeRejectsEscapingPaths(t *testing.T) {
 func TestResolveInHomeAcceptsPathsInsideTheHome(t *testing.T) {
 	home := t.TempDir()
 	for path, want := range map[string]string{
-		".vimrc":           filepath.Join(home, ".vimrc"),
-		"nested/deep/file": filepath.Join(home, "nested/deep/file"),
-		"nested/..":        home,
-		".config/":         filepath.Join(home, ".config"),
+		".vimrc":            filepath.Join(home, ".vimrc"),
+		"nested/deep/file":  filepath.Join(home, "nested/deep/file"),
+		"nested/../.gitcfg": filepath.Join(home, ".gitcfg"),
+		".config/":          filepath.Join(home, ".config"),
 	} {
 		got, err := resolveInHome(home, path)
 		if err != nil {
@@ -162,5 +167,101 @@ func TestResolveInHomeAcceptsPathsInsideTheHome(t *testing.T) {
 		if got != want {
 			t.Errorf("resolveInHome(%q) = %q, want %q", path, got, want)
 		}
+	}
+}
+
+// The rig's whole isolation promise lives in how Run wires the child process, and
+// the command under test cannot show it: it does not read its environment yet, so
+// deleting `cmd.Env = envv` would leave every conformance case green while every
+// run inherited the developer's real HOME, MACKUP_CONFIG, and PATH — and every
+// HomeUnchanged assertion became vacuous. This runs a probe through the same
+// wiring and reads back what actually arrived.
+func TestRunDeliversTheScrubbedEnvironmentWorkingDirectoryAndSeededHome(t *testing.T) {
+	// A variable set in this process is exactly what an inherited environment
+	// would leak into the child.
+	t.Setenv("MACKLEBOX_SELFTEST_SENTINEL", "leaked")
+
+	probe := `printf 'pwd=%s\n' "$(pwd)"; printf 'home=%s\n' "$HOME"; ` +
+		`printf 'seeded=%s' "$(cat .vimrc)"; printf '\n--env--\n'; env | sort`
+
+	r := runProgram(t, "/bin/sh", Invocation{
+		Args: []string{"-c", probe},
+		Env:  map[string]string{"MACKUP_CONFIG": "sentinel.cfg"},
+		Home: map[string]string{".vimrc": "seeded contents"},
+	})
+	if r.Code != 0 {
+		t.Fatalf("probe exited %d: %s", r.Code, r.Stderr)
+	}
+
+	head, envBlock, found := strings.Cut(r.Stdout, "\n--env--\n")
+	if !found {
+		t.Fatalf("probe output has no env block: %q", r.Stdout)
+	}
+
+	// The working directory is the throwaway home. Compared through
+	// EvalSymlinks because a temp directory reaches it via a symlink on macOS.
+	wantHome, err := filepath.EvalSymlinks(r.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"pwd=" + wantHome,
+		"home=" + r.Home,
+		"seeded=seeded contents",
+	} {
+		if !strings.Contains(head, want) {
+			t.Errorf("probe reported %q, want it to contain %q", head, want)
+		}
+	}
+
+	// The environment is childEnv's and nothing else. This is the assertion that
+	// fails if Run stops setting cmd.Env: an inherited environment would both
+	// lose HOME=<throwaway> and carry the host's own variables.
+	wantEnv, err := childEnv(r.Home, map[string]string{"MACKUP_CONFIG": "sentinel.cfg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(wantEnv)
+	gotEnv := strings.Split(strings.TrimSuffix(envBlock, "\n"), "\n")
+
+	for _, want := range wantEnv {
+		if !slices.Contains(gotEnv, want) {
+			t.Errorf("child environment = %q, want it to contain %q", gotEnv, want)
+		}
+	}
+	// The probe shell sets these three itself; anything else is inherited.
+	shellInjected := map[string]bool{"PWD": true, "SHLVL": true, "_": true}
+	wanted := map[string]bool{}
+	for _, line := range wantEnv {
+		name, _, _ := strings.Cut(line, "=")
+		wanted[name] = true
+	}
+	for _, line := range gotEnv {
+		name, _, _ := strings.Cut(line, "=")
+		if !wanted[name] && !shellInjected[name] {
+			t.Errorf("%s reached the child; the environment is being inherited, not built", line)
+		}
+	}
+}
+
+// HomeBefore is taken after seeding and before the run, which is what makes
+// HomeUnchanged mean anything. A probe that writes proves the ordering.
+func TestHomeBeforeIsSnapshottedAfterSeedingAndBeforeTheRun(t *testing.T) {
+	r := runProgram(t, "/bin/sh", Invocation{
+		Args: []string{"-c", "printf written > .written"},
+		Home: map[string]string{".vimrc": "seeded contents"},
+	})
+	if r.Code != 0 {
+		t.Fatalf("probe exited %d: %s", r.Code, r.Stderr)
+	}
+	if got, want := r.HomeBefore[".vimrc"], "file 0600 seeded contents"; got != want {
+		t.Errorf("HomeBefore[.vimrc] = %q, want %q — the snapshot must follow seeding", got, want)
+	}
+	if _, ok := r.HomeBefore[".written"]; ok {
+		t.Error("HomeBefore contains a file the run created; the snapshot must precede the run")
+	}
+	diffs := diffTree(r.HomeBefore, Snapshot(t, r.Home))
+	if len(diffs) != 1 || !strings.Contains(diffs[0], ".written was created") {
+		t.Errorf("diffTree = %q, want it to report only the created file", diffs)
 	}
 }

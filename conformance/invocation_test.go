@@ -244,9 +244,10 @@ func TestOnlyHelpAndVersionBypassTheConfigGate(t *testing.T) {
 	}
 }
 
-// A case may name the spec's other environment variables, and they reach the
-// program. HOME is the rig's, and Run refuses a case that tries to take it.
-func TestEnvOverridesReachTheProgramButHomeIsTheRigs(t *testing.T) {
+// childEnv builds the environment from nothing. That it then reaches the child is
+// a separate claim, held by
+// TestRunDeliversTheScrubbedEnvironmentWorkingDirectoryAndSeededHome.
+func TestChildEnvBuildsTheEnvironmentFromNothing(t *testing.T) {
 	env, err := childEnv("/tmp/home", map[string]string{
 		"XDG_CONFIG_HOME": "/tmp/home/.config",
 		"MACKUP_CONFIG":   "/tmp/home/other.cfg",

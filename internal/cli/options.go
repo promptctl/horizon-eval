@@ -96,10 +96,15 @@ var shortToLong = map[byte]string{
 	'c': "--config-file",
 }
 
-// longToShort is shortToLong inverted, for naming an option in a diagnostic.
+// longToShort is shortToLong inverted, for naming an option in a diagnostic. When
+// a long option ever gains a second short alias, the smaller letter wins, so
+// spell's output cannot vary between runs with map iteration order.
 var longToShort = func() map[string]byte {
 	inverted := make(map[string]byte, len(shortToLong))
 	for short, long := range shortToLong {
+		if existing, ok := inverted[long]; ok && existing < short {
+			continue
+		}
 		inverted[long] = short
 	}
 	return inverted

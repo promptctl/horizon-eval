@@ -89,12 +89,23 @@ func (r Result) PlainStdout() string { return sgr.ReplaceAllString(r.Stdout, "")
 // PlainStderr is Stderr with colour sequences removed.
 func (r Result) PlainStderr() string { return sgr.ReplaceAllString(r.Stderr, "") }
 
-// Run executes the command for one invocation and returns what it observed.
+// Run executes the command under test for one invocation and returns what it
+// observed.
 //
 // The environment is built from scratch rather than inherited: a developer's own
 // MACKUP_CONFIG, XDG_CONFIG_HOME, or HOME must not be able to change what a
 // conformance run observes.
 func Run(t *testing.T, inv Invocation) Result {
+	t.Helper()
+	return runProgram(t, binary, inv)
+}
+
+// runProgram is Run with the program to execute injected. Run passes the binary
+// under test; a self-test passes a probe that reports its environment, working
+// directory, and what it can see in the home tree, which is the only way to
+// observe that this wiring actually reaches the child — the command under test
+// does not read its environment yet, so no conformance case can tell.
+func runProgram(t *testing.T, program string, inv Invocation) Result {
 	t.Helper()
 
 	home := t.TempDir()
@@ -112,7 +123,7 @@ func Run(t *testing.T, inv Invocation) Result {
 
 	before := Snapshot(t, home)
 
-	cmd := exec.Command(binary, inv.Args...)
+	cmd := exec.Command(program, inv.Args...)
 	cmd.Env = envv
 	cmd.Dir = home
 	cmd.Stdin = strings.NewReader(inv.Stdin)
@@ -129,8 +140,8 @@ func Run(t *testing.T, inv Invocation) Result {
 		// as a code it would satisfy every "non-zero exit" assertion in the suite,
 		// so a crashing binary would be indistinguishable from a clean failure.
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-			t.Fatalf("mackup %v was killed by signal %v\nstdout: %q\nstderr: %q",
-				inv.Args, status.Signal(), out.String(), errb.String())
+			t.Fatalf("%s %v was killed by signal %v\nstdout: %q\nstderr: %q",
+				program, inv.Args, status.Signal(), out.String(), errb.String())
 		}
 		code = exitErr.ExitCode()
 	}
@@ -172,7 +183,10 @@ func childEnv(home string, overrides map[string]string) ([]string, error) {
 // run. A path ending in "/" is a directory; any parent directories are created.
 func seedHome(t *testing.T, home string, tree map[string]string) {
 	t.Helper()
-	for path, contents := range tree {
+	// Sorted, so a case whose keys contradict each other ({"a": "x", "a/b": "y"})
+	// fails identically every run rather than depending on map order.
+	for _, path := range sortedKeys(tree) {
+		contents := tree[path]
 		full, err := resolveInHome(home, path)
 		if err != nil {
 			t.Fatalf("seeding %s: %v", path, err)
@@ -193,18 +207,23 @@ func seedHome(t *testing.T, home string, tree map[string]string) {
 }
 
 // resolveInHome joins a home-relative seed path onto home, rejecting any path
-// that escapes it. filepath.Join cleans "..", so a key like "../outside.cfg"
-// would otherwise write into the temp parent that holds sibling cases' homes —
-// outside the sandbox, and outside what Snapshot walks, so HomeUnchanged could
-// not see it either.
+// that escapes it or names the home itself. filepath.Join cleans "..", so a key
+// like "../outside.cfg" would otherwise write into the temp parent that holds
+// sibling cases' homes — outside the sandbox, and outside what Snapshot walks, so
+// HomeUnchanged could not see it either. A key resolving to the home root names
+// no entry to seed, and would reach seedHome's file branch and fail on the
+// directory that is already there.
 func resolveInHome(home, path string) (string, error) {
 	full := filepath.Join(home, path)
 	rel, err := filepath.Rel(home, full)
 	if err != nil {
 		return "", err
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	switch {
+	case rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)):
 		return "", fmt.Errorf("path escapes the throwaway home")
+	case rel == ".":
+		return "", fmt.Errorf("path names the home itself, not an entry in it")
 	}
 	return full, nil
 }
