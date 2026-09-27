@@ -13,7 +13,10 @@ without reference to any other implementation.
 
 ## Status
 
-Specification complete; implementation not yet started. Start at
+Under construction. The command-line boundary is in place — the invocation
+grammar, the global options, the dispatch order and the exit codes of
+[`appspec/02-invocation.md`](appspec/02-invocation.md); the commands behind it
+are not yet implemented and fail loudly rather than reporting success. Start at
 [`appspec/00-overview.md`](appspec/00-overview.md) — the spec reads top-down
 through altitudes (product contract → architecture → boundary detail).
 
@@ -22,4 +25,20 @@ through altitudes (product contract → architecture → boundary detail).
 | Path | What it is |
 |------|------------|
 | `appspec/` | The functional specification that drives the build (source of truth) |
+| `src/macklebox/` | The implementation. `macklebox` is the package name; the command it installs is `mackup` |
+| `tests/` | The test suite |
 | `LICENSE`  | MIT |
+
+## Building and testing
+
+Python, managed with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv sync          # create .venv and install macklebox plus its dev tools
+uv run pytest    # run the suite
+uv run mackup --help
+```
+
+The package version is the version string the application reports, so
+`--version` prints `Mackup 0.11.1` — the reference build's string, which
+`appspec/00-overview.md` pins as observable.
